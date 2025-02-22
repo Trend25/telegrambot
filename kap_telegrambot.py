@@ -6,9 +6,7 @@ import json
 import time
 import yfinance as yf
 from datetime import datetime
-from bs4 import BeautifulSoup
 import logging
-import feedparser
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,60 +41,59 @@ def get_stock_price(company_name):
         logger.error(f"Fiyat çekme hatası ({company_name}): {e}")
     return "Fiyat alınamadı"
 
-def extract_company_name(title):
-    try:
-        # Başlıktan şirket adını çıkar
-        parts = title.split(' - ')
-        if len(parts) > 1:
-            return parts[0].strip()
-    except:
-        pass
-    return None
-
 def check_kap():
     try:
         logger.info("KAP duyuruları kontrol ediliyor...")
         
-        # KAP RSS feed'ini kullan
-        feed = feedparser.parse('https://www.kap.org.tr/tr/rss/ek')
-        logger.info(f"RSS feed durumu: {feed.status if hasattr(feed, 'status') else 'Bilinmiyor'}")
-        logger.info(f"Bulunan duyuru sayısı: {len(feed.entries)}")
+        # KAP API endpoint'i
+        url = "https://www.kap.org.tr/tr/api/disclosureRss"
         
-        for entry in feed.entries[:10]:  # Son 10 duyuruyu kontrol et
+        headers = {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers)
+        logger.info(f"API yanıt kodu: {response.status_code}")
+        
+        if response.status_code == 200:
             try:
-                time_str = datetime.strptime(entry.published, '%a, %d %b %Y %H:%M:%S %z').strftime('%Y-%m-%d %H:%M')
-                company = extract_company_name(entry.title)
-                subject = entry.title
+                announcements = response.json()
+                logger.info(f"Bulunan duyuru sayısı: {len(announcements)}")
                 
-                if not company:
-                    logger.warning(f"Şirket adı çıkarılamadı: {entry.title}")
-                    continue
-                
-                logger.info(f"Duyuru ayrıştırıldı: {company} - {subject}")
-                
-                announcement_id = f"{company}-{subject}-{time_str}"
-                
-                if announcement_id not in seen_announcements:
-                    stock_price = get_stock_price(company)
+                for announcement in announcements[:10]:  # Son 10 duyuruyu işle
+                    try:
+                        company = announcement.get('companyTitle', 'Bilinmiyor')
+                        subject = announcement.get('title', 'Bilinmiyor')
+                        time_str = datetime.fromtimestamp(announcement.get('publishDate', 0)/1000).strftime('%Y-%m-%d %H:%M')
+                        disclosure_url = f"https://www.kap.org.tr/tr/Bildirim/{announcement.get('disclosureId')}"
+                        
+                        announcement_id = f"{company}-{subject}-{time_str}"
+                        
+                        if announcement_id not in seen_announcements:
+                            stock_price = get_stock_price(company)
+                            
+                            message = f"""
+                            <b>📢 Yeni KAP Duyurusu</b>
+                            <b>📅 Tarih:</b> {time_str}
+                            <b>🏢 Şirket:</b> {company} ({stock_price})
+                            <b>📝 Konu:</b> {subject}
+                            <b>🔗 Link:</b> {disclosure_url}
+                            """
+                            
+                            send_telegram_message(message)
+                            seen_announcements[announcement_id] = True
+                            logger.info(f"Yeni duyuru gönderildi: {company}")
+                            
+                    except Exception as e:
+                        logger.error(f"Duyuru işleme hatası: {e}")
+                        continue
                     
-                    message = f"""
-                    <b>📢 Yeni KAP Duyurusu</b>
-                    <b>📅 Tarih:</b> {time_str}
-                    <b>🏢 Şirket:</b> {company} ({stock_price})
-                    <b>📝 Konu:</b> {subject}
-                    <b>🔗 Link:</b> {entry.link}
-                    """
-                    
-                    send_telegram_message(message)
-                    seen_announcements[announcement_id] = True
-                    logger.info(f"Yeni duyuru gönderildi: {company}")
-                else:
-                    logger.info(f"Bu duyuru daha önce gönderilmiş: {company}")
-                
-            except Exception as e:
-                logger.error(f"Duyuru işleme hatası: {e}")
-                continue
-                
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON ayrıştırma hatası: {e}")
+        else:
+            logger.error(f"API yanıt hatası: {response.status_code}")
+            
     except Exception as e:
         logger.error(f"KAP veri çekme hatası: {e}")
         logger.exception("Detaylı hata:")
