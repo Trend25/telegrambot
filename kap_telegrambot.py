@@ -9,13 +9,11 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import logging
 
-# Logging ayarları
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Bot konfigürasyonu
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 seen_announcements = {}
@@ -48,20 +46,27 @@ def check_kap():
     try:
         logger.info("KAP duyuruları kontrol ediliyor...")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get("https://www.kap.org.tr/tr/bildirim-sorgu", headers=headers)
+        
+        # KAP'ın ana bildirim sayfasını çek
+        response = requests.get("https://www.kap.org.tr/tr/bildirimler", headers=headers)
         logger.info(f"KAP yanıt kodu: {response.status_code}")
+        logger.info(f"KAP yanıt içeriği uzunluğu: {len(response.text)}")
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        announcements = soup.select('.notification-row')
+        
+        # Tüm duyuru container'larını bul
+        announcements = soup.find_all('div', class_='w-list-notification')
         logger.info(f"Bulunan duyuru sayısı: {len(announcements)}")
         
         for item in announcements[:5]:
             try:
-                time_str = item.select_one('.time').text.strip()
-                company = item.select_one('.company-title').text.strip()
-                subject = item.select_one('.notification-subject').text.strip()
+                # Yeni CSS seçicilerle elementleri bul
+                time_str = item.find('span', class_='np-time').text.strip()
+                company = item.find('div', class_='np-company-name').text.strip()
+                subject = item.find('div', class_='np-type').text.strip()
+                
                 logger.info(f"Duyuru bulundu: {company} - {subject}")
                 
                 announcement_id = f"{company}-{subject}-{time_str}"
@@ -84,6 +89,7 @@ def check_kap():
                     
             except Exception as e:
                 logger.error(f"Duyuru işleme hatası: {e}")
+                logger.error(f"Duyuru HTML: {item}")
                 continue
                 
     except Exception as e:
@@ -95,10 +101,10 @@ def bot_loop():
             logger.info(f"Bot döngüsü başlıyor... ({datetime.now()})")
             check_kap()
             logger.info("Bot döngüsü tamamlandı, 5 dakika bekleniyor...")
-            time.sleep(300)  # 5 dakika bekle
+            time.sleep(300)
         except Exception as e:
             logger.error(f"Bot döngüsü hatası: {e}")
-            time.sleep(60)  # Hata durumunda 1 dakika bekle
+            time.sleep(60)
 
 @app.route('/')
 def home():
@@ -107,13 +113,11 @@ def home():
 if __name__ == "__main__":
     logger.info("Bot başlatılıyor...")
     
-    # Bot'u ayrı bir thread'de başlat
     bot_thread = threading.Thread(target=bot_loop)
     bot_thread.daemon = True
     bot_thread.start()
     logger.info("Bot thread'i başlatıldı")
     
-    # Web sunucusunu başlat
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Web sunucusu başlatılıyor - Port: {port}")
     app.run(host='0.0.0.0', port=port)
