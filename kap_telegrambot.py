@@ -45,55 +45,89 @@ def get_stock_price(company_name):
 def check_kap():
     try:
         logger.info("KAP duyuruları kontrol ediliyor...")
+        
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         
-        # KAP'ın ana bildirim sayfasını çek
-        response = requests.get("https://www.kap.org.tr/tr/bildirimler", headers=headers)
-        logger.info(f"KAP yanıt kodu: {response.status_code}")
-        logger.info(f"KAP yanıt içeriği uzunluğu: {len(response.text)}")
+        session = requests.Session()
         
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # İlk olarak ana sayfaya git (cookie'leri almak için)
+        logger.info("KAP ana sayfası ziyaret ediliyor...")
+        main_page = session.get("https://www.kap.org.tr/tr", headers=headers, allow_redirects=True)
+        logger.info(f"Ana sayfa yanıt kodu: {main_page.status_code}")
         
-        # Tüm duyuru container'larını bul
-        announcements = soup.find_all('div', class_='w-list-notification')
-        logger.info(f"Bulunan duyuru sayısı: {len(announcements)}")
+        # Sonra bildirimleri al
+        logger.info("Bildirimler sayfası ziyaret ediliyor...")
+        response = session.get("https://www.kap.org.tr/tr/bist-sirketler", headers=headers, allow_redirects=True)
+        logger.info(f"Bildirimler sayfası yanıt kodu: {response.status_code}")
         
-        for item in announcements[:5]:
-            try:
-                # Yeni CSS seçicilerle elementleri bul
-                time_str = item.find('span', class_='np-time').text.strip()
-                company = item.find('div', class_='np-company-name').text.strip()
-                subject = item.find('div', class_='np-type').text.strip()
-                
-                logger.info(f"Duyuru bulundu: {company} - {subject}")
-                
-                announcement_id = f"{company}-{subject}-{time_str}"
-                
-                if announcement_id not in seen_announcements:
-                    stock_price = get_stock_price(company)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            logger.info(f"Sayfa içeriği uzunluğu: {len(response.text)}")
+            logger.info(f"Sayfa başlığı: {soup.title.string if soup.title else 'Başlık bulunamadı'}")
+            
+            # Duyuruları bul
+            announcements = soup.find_all('div', {'class': ['announcement-item', 'w-list-notification']})
+            logger.info(f"Bulunan duyuru sayısı: {len(announcements)}")
+            
+            if len(announcements) == 0:
+                # Alternatif seçicileri dene
+                announcements = soup.find_all('tr', {'data-id': True})
+                logger.info(f"Alternatif seçici ile bulunan duyuru sayısı: {len(announcements)}")
+            
+            for item in announcements[:5]:
+                try:
+                    # Farklı HTML yapıları için kontrol
+                    time_str = (
+                        item.find('div', class_='time').text.strip() if item.find('div', class_='time') else
+                        item.find('td', class_='date').text.strip() if item.find('td', class_='date') else
+                        datetime.now().strftime("%Y-%m-%d %H:%M")
+                    )
                     
-                    message = f"""
-                    <b>📢 Yeni KAP Duyurusu</b>
-                    <b>📅 Tarih:</b> {time_str}
-                    <b>🏢 Şirket:</b> {company} ({stock_price})
-                    <b>📝 Konu:</b> {subject}
-                    """
+                    company = (
+                        item.find('div', class_='company-name').text.strip() if item.find('div', class_='company-name') else
+                        item.find('td', class_='company').text.strip() if item.find('td', class_='company') else
+                        "Şirket bilgisi bulunamadı"
+                    )
                     
-                    send_telegram_message(message)
-                    seen_announcements[announcement_id] = True
-                    logger.info(f"Yeni duyuru gönderildi: {company}")
-                else:
-                    logger.info(f"Bu duyuru daha önce gönderilmiş: {company}")
+                    subject = (
+                        item.find('div', class_='announcement-title').text.strip() if item.find('div', class_='announcement-title') else
+                        item.find('td', class_='disclosure').text.strip() if item.find('td', class_='disclosure') else
+                        "Konu bulunamadı"
+                    )
                     
-            except Exception as e:
-                logger.error(f"Duyuru işleme hatası: {e}")
-                logger.error(f"Duyuru HTML: {item}")
-                continue
-                
+                    logger.info(f"Duyuru ayrıştırıldı: {company} - {subject}")
+                    
+                    announcement_id = f"{company}-{subject}-{time_str}"
+                    
+                    if announcement_id not in seen_announcements:
+                        stock_price = get_stock_price(company)
+                        
+                        message = f"""
+                        <b>📢 Yeni KAP Duyurusu</b>
+                        <b>📅 Tarih:</b> {time_str}
+                        <b>🏢 Şirket:</b> {company} ({stock_price})
+                        <b>📝 Konu:</b> {subject}
+                        """
+                        
+                        send_telegram_message(message)
+                        seen_announcements[announcement_id] = True
+                        logger.info(f"Yeni duyuru gönderildi: {company}")
+                    
+                except Exception as e:
+                    logger.error(f"Duyuru işleme hatası: {e}")
+                    continue
+        else:
+            logger.error(f"KAP yanıt kodu başarısız: {response.status_code}")
+            
     except Exception as e:
         logger.error(f"KAP veri çekme hatası: {e}")
+        logger.exception("Detaylı hata:")
 
 def bot_loop():
     while True:
